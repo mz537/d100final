@@ -1,0 +1,27 @@
+name: d100_final_project
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  # defaults
+  - python>=3.8
+  - pip
+  - pre-commit
+  - pytest>=6  # Adds --import-mode option
+  - pytest-cov
+  - setuptools-scm
+  # data
+  - pandas
+  - numpy
+  - dask-ml
+  - ydata-profiling
+  # interactive
+  - ipykernel
+  # plots
+  - matplotlib
+  - nbformat
+  # ml
+  - glum
+  - lightgbm
+  - scikit-learn
+  - dalex
