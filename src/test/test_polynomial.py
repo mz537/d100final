@@ -1,7 +1,8 @@
 import numpy as np
 import pandas as pd
 import pytest
-from project.preprocessing._polynomial_transformer import PolynomialTransformer
+
+from project.feature_enginnering.feature_engineering import PolynomialTransformer
 
 
 def test_polynomial_transformer():
