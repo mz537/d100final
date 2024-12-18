@@ -12,7 +12,7 @@ dependencies:
   - setuptools-scm
   # data
   - pandas
-  - numpy
+  - numpy<2
   - dask-ml
   - ydata-profiling
   # interactive

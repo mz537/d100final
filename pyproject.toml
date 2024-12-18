@@ -1,8 +1,39 @@
 [build-system]
 requires = ['setuptools', 'setuptools-scm', 'wheel']
 
+[project]
+name = "final_project"
+version = "0.1.0"
+description = "A final project for income prediction models"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "pandas",
+    "numpy<2",
+    "dask-ml",
+    "ydata-profiling",
+    "matplotlib",
+    "glum",
+    "lightgbm",
+    "scikit-learn",
+    "dalex",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pre-commit",
+    "pytest>=6",
+    "pytest-cov",
+    "setuptools-scm",
+    "ipykernel",
+    "nbformat",
+]
+
 [tool.setuptools_scm]
 version_scheme = "post-release"
+
+[tool.setuptools.packages.find]
+include = ["project*", "src*", "analysis*"]
 
 [tool.black]
 exclude = '''
@@ -26,11 +57,10 @@ skip_glob = '\.eggs/*,\.git/*,\.venv/*,build/*,dist/*'
 default_section = 'THIRDPARTY'
 
 [tool.mypy]
-python_version = '3.8'
+python_version = '3.12'
 ignore_missing_imports = true
 no_implicit_optional = true
 check_untyped_defs = true
-
 
 [tool.docformatter]
 pre-summary-newline = true
@@ -39,9 +69,12 @@ wrap-descriptions = 88
 wrap-summaries = 88
 
 [tool.pytest.ini_options]
-# This will be pytest's future default.
 addopts = "--import-mode=importlib --cov=d100_final_project"
-pythonpath="."
+pythonpath = "."
 
-[tool.setuptools.packages.find]
-include = ["project", "analysis"]
+[tool.coverage.run]
+source = ["project", "analysis", "src"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
