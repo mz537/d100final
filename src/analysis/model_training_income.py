@@ -15,9 +15,9 @@ from sklearn.model_selection import GridSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, SplineTransformer, StandardScaler
 
-from project.data._sample_split import create_sample_split
-from project.data.preprocessing import load_mcdata_p
-from project.evaluation._evaluate_predictions import (
+from src.project.data._sample_split import create_sample_split
+from src.project.data.preprocessing import load_mcdata_p
+from src.project.evaluation._evaluate_predictions import (
     evaluate_predictions,
     gaussian_deviance,
     lorenz_curve,
