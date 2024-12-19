@@ -9,7 +9,8 @@ from dask_ml.preprocessing import Categorizer
 from glum import GeneralizedLinearRegressor
 from lightgbm import LGBMRegressor
 from sklearn.compose import ColumnTransformer
-from sklearn.metrics import auc, mean_squared_error
+from sklearn.inspection import PartialDependenceDisplay
+from sklearn.metrics import auc, make_scorer, mean_absolute_error, mean_squared_error
 from sklearn.model_selection import GridSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, SplineTransformer, StandardScaler
@@ -63,7 +64,6 @@ numeric_cols = [
     "MntMeatProducts_log",
     "MntGoldProds_log",
     "MntFishProducts_log",
-    "Recency",
 ]
 predictors = categoricals + numeric_cols
 glm_categorizer = Categorizer(columns=categoricals)
@@ -80,17 +80,40 @@ pp_glm1.fit(X_train_t, y_train_t, sample_weight=w_train_t)
 
 df_test["pp_glm1"] = pp_glm1.predict(X_test_t)
 df_train["pp_glm1"] = pp_glm1.predict(X_train_t)
-train_loss_glm_1 = gaussian_deviance(
-    y_train_t, df_train["pp_glm1"], w_train_t
-) / np.sum(w_train_t)
-test_loss_glm_1 = gaussian_deviance(y_test_t, df_test["pp_glm1"], w_test_t) / np.sum(
-    w_test_t
+
+
+pd.set_option("display.float_format", lambda x: "%.3f" % x)
+evaluate_predictions(
+    df_test,
+    outcome_column="Income",
+    preds_column="pp_glm1",
 )
-print(f"Training loss (Glm1, Gaussian Deviance): {train_loss_glm_1: .5f}")
-print(f"Testing loss (Glm1, Gaussian Deviance): {test_loss_glm_1: .5f}")
 
 # %%
-# add splines for numerical variables and use pipeline
+# try gamma family
+pp_glm3 = GeneralizedLinearRegressor(
+    family="gamma", drop_first=True, fit_intercept=True
+)
+pp_glm3.fit(X_train_t, y_train_t, sample_weight=w_train_t)
+
+df_test["pp_glm3"] = pp_glm3.predict(X_test_t)
+df_train["pp_glm3"] = pp_glm3.predict(X_train_t)
+
+
+pd.set_option("display.float_format", lambda x: "%.3f" % x)
+evaluate_predictions(
+    df_test,
+    outcome_column="Income",
+    preds_column="pp_glm3",
+)
+
+# the result from gaussian is better than gamma, so we choose gaussian
+
+
+# %%
+# hypertuning GLM model for alpha and l1
+# Custom scorer for Gaussian Deviance
+scorer = make_scorer(mean_absolute_error, greater_is_better=False)
 
 # Preprocessing: Splines for numeric columns, OneHot for categoricals
 preprocessor = ColumnTransformer(
@@ -109,48 +132,50 @@ preprocessor = ColumnTransformer(
     ]
 )
 
-preprocessor.set_output(transform="pandas")  # Output as DataFrame
-model_pipeline = Pipeline(
+# Define the pipeline with preprocessing and GLM estimator
+glm_pipeline = Pipeline(
     [
         ("preprocess", preprocessor),
-        (
-            "estimate",
-            GeneralizedLinearRegressor(family="gaussian", fit_intercept=True),
-        ),
+        ("estimate", GeneralizedLinearRegressor(family="gaussian", fit_intercept=True)),
     ]
 )
 
-model_pipeline
+# Define parameter grid for hyperparameter tuning
+param_grid = {
+    "estimate__alpha": [0.01, 0.1, 1],  # Regularization strength
+    "estimate__l1_ratio": [0, 0.25, 0.5, 0.75, 1],  # Mix of L1 (Lasso) and L2 (Ridge)
+}
 
-# check if the pipeline works
-model_pipeline[:-1].fit_transform(df_train)
-
-model_pipeline.fit(df_train, y_train_t, estimate__sample_weight=w_train_t)
-# %%
-pd.DataFrame(
-    {
-        "coefficient": np.concatenate(
-            ([model_pipeline[-1].intercept_], model_pipeline[-1].coef_)
-        )
-    },
-    index=["intercept"] + model_pipeline[-1].feature_names_,
-).T
-
-df_test["pp_glm2"] = model_pipeline.predict(df_test)
-df_train["pp_glm2"] = model_pipeline.predict(df_train)
-
-train_loss_glm_2 = gaussian_deviance(
-    y_train_t, df_train["pp_glm2"], w_train_t
-) / np.sum(w_train_t)
-test_loss_glm_2 = gaussian_deviance(y_test_t, df_test["pp_glm2"], w_test_t) / np.sum(
-    w_test_t
+# Grid search with cross-validation
+grid_search_glm = GridSearchCV(
+    estimator=glm_pipeline,
+    param_grid=param_grid,
+    scoring=scorer,
+    cv=10,  # 10-fold cross-validation
+    verbose=2,
 )
-print(f"Training loss (Glm2, Gaussian Deviance): {train_loss_glm_2: .5f}")
-print(f"Testing loss (Glm2, Gaussian Deviance): {test_loss_glm_2: .5f}")
+
+# Fit the grid search on training data
+grid_search_glm.fit(df_train, y_train_t, estimate__sample_weight=w_train_t)
+
+# Extract the best pipeline and parameters
+best_glm_pipeline = grid_search_glm.best_estimator_
+print("Best parameters:", grid_search_glm.best_params_)
+
+# Evaluate the best pipeline on the test set
+df_test["pp_best_glm_pipeline"] = best_glm_pipeline.predict(df_test)
+df_train["pp_best_glm_pipeline"] = best_glm_pipeline.predict(df_train)
+
+test_loss_best_glm_pipeline = mean_absolute_error(
+    y_test_t, df_test["pp_best_glm_pipeline"]
+)
+print(f"Test MAE: {test_loss_best_glm_pipeline: .5f}")
+
+# we can see that Best parameters: {'estimate__alpha': 1, 'estimate__l1_ratio': 1}
 
 
 # %%
-# we can see that deviance has declined by using splines and pipelines
+
 # now lets use GBM as estimator
 model_pipeline_lgbm = Pipeline(
     [
@@ -181,119 +206,63 @@ df_test["pp_gbm"] = model_pipeline_lgbm.predict(X_test_t)
 
 
 # Calculate training and testing loss
-train_loss_gbm = gaussian_deviance(y_train_t, df_train["pp_gbm"], w_train_t) / np.sum(
-    w_train_t
-)
-test_loss_gbm = gaussian_deviance(y_test_t, df_test["pp_gbm"], w_test_t) / np.sum(
-    w_test_t
+pd.set_option("display.float_format", lambda x: "%.3f" % x)
+evaluate_predictions(
+    df_test,
+    outcome_column="Income",
+    preds_column="pp_gbm",
 )
 
-# Print results
-print(f"Training loss (GBM, Gaussian Deviance): {train_loss_gbm: .5f}")
-print(f"Testing loss (GBM, Gaussian Deviance): {test_loss_gbm: .5f}")
-
-# Compare total observed vs predicted on test set
-print(
-    "Total income on test set, observed = {:.2f}, predicted = {:.2f}".format(
-        y_test_t.sum(), np.sum(df_test["pp_gbm"])
-    )
-)
 # %%
-# reduce overfitting by tuning the pipeline
+# hyperparameter tuning for pipeline of unconstrained lgbm
 
-cv = GridSearchCV(
+cv_u = GridSearchCV(
     model_pipeline_lgbm,
     {
         "estimate__learning_rate": [0.01, 0.02, 0.05, 0.1],
-        "estimate__n_estimators": [100, 200, 500],
+        "estimate__n_estimators": [1000],
+        "estimate__num_leaves": [6, 12, 24],  # Leaf nodes per tree
+        "estimate__min_child_weight": [1, 5, 10],
     },
+    cv=5,
+    scoring=scorer,
     verbose=2,
 )
-cv.fit(
+cv_u.fit(
     X_train_t,
     y_train_t,
     estimate__sample_weight=w_train_t,
     estimate__eval_set=[(X_test_t, y_test_t), (X_train_t, y_train_t)],
 )
-lgbm_unconstrained = cv.best_estimator_
+lgbm_unconstrained = cv_u.best_estimator_
 
-df_test["pp_t_lgbm"] = cv.best_estimator_.predict(X_test_t)
-df_train["pp_t_lgbm"] = cv.best_estimator_.predict(X_train_t)
+df_test["pp_t_lgbm"] = cv_u.best_estimator_.predict(X_test_t)
+df_train["pp_t_lgbm"] = cv_u.best_estimator_.predict(X_train_t)
 
-train_loss_lgbm = gaussian_deviance(
-    y_train_t, df_train["pp_t_lgbm"], w_train_t
-) / np.sum(w_train_t)
-test_loss_lgbm = gaussian_deviance(y_test_t, df_test["pp_t_lgbm"], w_test_t) / np.sum(
-    w_test_t
+pd.set_option("display.float_format", lambda x: "%.3f" % x)
+evaluate_predictions(
+    df_test,
+    outcome_column="Income",
+    preds_column="pp_t_lgbm",
 )
-
-# Print results
-print(f"Training loss (LGBM, Gaussian Deviance): {train_loss_lgbm: .5f}")
-print(f"Testing loss (LGBM, Gaussian Deviance): {test_loss_lgbm: .5f}")
-
-# Compare total observed vs predicted on test set
-print(
-    "Total income on test set, observed = {:.2f}, predicted = {:.2f}".format(
-        y_test_t.sum(), np.sum(df_test["pp_t_lgbm"])
-    )
-)
-
 # %%
+print("Best Parameters for unconstrained LGBM:")
+print(cv_u.best_params_)
+# Best Parameters for unconstrained LGBM:
+# {'estimate__learning_rate': 0.05, 'estimate__min_child_weight': 1,
+# 'estimate__n_estimators': 1000, 'estimate__num_leaves': 6
 
-df_plot_fish = (
-    df.groupby("MntFishProducts_log")
-    .apply(lambda x: np.average(x["Income"]))
-    .reset_index(name="Income")
-)
-sns.scatterplot(df_plot_fish, x="MntFishProducts_log", y="Income")
-
-# %%
-df_plot_meat = (
-    df.groupby("MntMeatProducts_log")
-    .apply(lambda x: np.average(x["Income"]))
-    .reset_index(name="Income")
-)
-sns.scatterplot(df_plot_meat, x="MntMeatProducts_log", y="Income")
-# %%
-df_plot_ren = (
-    df.groupby("Recency")
-    .apply(lambda x: np.average(x["Income"]))
-    .reset_index(name="Income")
-)
-sns.scatterplot(df_plot_ren, x="Recency", y="Income")
-# %%
-
-df_plot_gold = (
-    df.groupby("MntGoldProds_log")
-    .apply(lambda x: np.average(x["Income"]))
-    .reset_index(name="Income")
-)
-sns.scatterplot(df_plot_gold, x="MntGoldProds_log", y="Income")
-
-# %%
-df_plot_wine = (
-    df.groupby("MntWines_log")
-    .apply(lambda x: np.average(x["Income"]))
-    .reset_index(name="Income")
-)
-sns.scatterplot(df_plot_wine, x="MntWines_log", y="Income")
-
-# %%
-df_plot_fruit = (
-    df.groupby("MntFruits_log")
-    .apply(lambda x: np.average(x["Income"]))
-    .reset_index(name="Income")
-)
-sns.scatterplot(df_plot_fruit, x="MntFruits_log", y="Income")
 # %%
 # Hyperparameter Tuning for LGBM with Monotonic Constraints
+# from EDA we know that numerical features have positive relationships
+# we set monotone_constraints for them as 1 and 0 for categoricals
 lgbm_constrained = Pipeline(
     [
         (
             "estimate",
             LGBMRegressor(
                 objective="regression",
-                monotone_constraints=[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0],
+                monotone_constraints=[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
             ),
         )
     ]
@@ -302,10 +271,14 @@ lgbm_constrained = Pipeline(
 cv = GridSearchCV(
     lgbm_constrained,
     {
-        "estimate__learning_rate": [0.01, 0.02, 0.05],
-        "estimate__n_estimators": [500, 1000],
+        "estimate__learning_rate": [0.01, 0.02, 0.05, 0.1],
+        "estimate__n_estimators": [1000],
+        "estimate__num_leaves": [6, 12, 24],  # Leaf nodes per tree
+        "estimate__min_child_weight": [1, 5, 10],
     },
     verbose=2,
+    cv=5,
+    scoring=scorer,
 )
 
 cv.fit(
@@ -322,30 +295,24 @@ lgbm_constrained.fit(
     estimate__eval_set=[(X_test_t, y_test_t), (X_train_t, y_train_t)],
 )
 
-train_loss_clgbm = gaussian_deviance(
-    y_train_t, df_train["pp_t_clgbm"], w_train_t
-) / np.sum(w_train_t)
-test_loss_clgbm = gaussian_deviance(y_test_t, df_test["pp_t_clgbm"], w_test_t) / np.sum(
-    w_test_t
-)
-
-# Print results
-print(f"Training loss (LGBM, Gaussian Deviance): {train_loss_clgbm: .5f}")
-print(f"Testing loss (LGBM, Gaussian Deviance): {test_loss_clgbm: .5f}")
 
 lgb.plot_metric(lgbm_constrained[0])
+pd.set_option("display.float_format", lambda x: "%.3f" % x)
+evaluate_predictions(
+    df_test,
+    outcome_column="Income",
+    preds_column="pp_t_clgbm",
+)
+# %%
+print("Best Parameters for Constrained LGBM:")
+print(cv.best_params_)
+# Best Parameters for Constrained LGBM:
+# {'estimate__learning_rate': 0.01, 'estimate__min_child_weight': 1,
+#  'estimate__n_estimators': 1000, 'estimate__num_leaves': 12}
 
-train_mse_clgbm = mean_squared_error(
-    y_train_t, df_train["pp_t_clgbm"], sample_weight=w_train_t
-)
-test_mse_clgbm = mean_squared_error(
-    y_test_t, df_test["pp_t_clgbm"], sample_weight=w_test_t
-)
-print(f"Best parameters: {cv.best_params_}")
-print(f"Training MSE: {train_mse_clgbm: .5f}")
-print(f"Testing MSE: {test_mse_clgbm: .5f}")
 
 # %%
+# partial dependency plots
 lgbm_constrained_exp = dx.Explainer(
     lgbm_constrained, X_test_t, y_test_t, label="Constrained LGBM"
 )
@@ -359,9 +326,65 @@ pdp_unconstrained = lgbm_unconstrained_exp.model_profile()
 pdp_constrained.plot(pdp_unconstrained)
 
 # %%
+# shapley values plots
 shap = lgbm_constrained_exp.predict_parts(X_test_t.head(1), type="shap")
 
+
 shap.plot()
+
+
+# %%
+# pdp for top 5 features from constrained LGBM
+# top 5 features from constrained LGBM
+top_5_features = [
+    "MntWines_log",
+    "MntMeatProducts_log",
+    "Children",
+    "NumStorePurchases",
+    "NumWebPurchases",
+]
+
+# Plot Partial Dependence for the top 5 features
+fig, ax = plt.subplots(nrows=5, figsize=(12, 20))
+
+PartialDependenceDisplay.from_estimator(
+    lgbm_constrained.named_steps[
+        "estimate"
+    ],  # Extracting the LGBMRegressor from the pipeline
+    X_test_t,  # Test dataset
+    features=top_5_features,
+    grid_resolution=50,
+    ax=ax,
+)
+
+plt.tight_layout()
+plt.show()
+
+# %%
+# Predict vs Actual Plot for constrained, unconstrained LGBM and tuned GLM
+models_predictions = {
+    "Constrained LGBM": df_test["pp_t_clgbm"],
+    "Unconstrained LGBM": df_test["pp_t_lgbm"],
+    "Tuned GLM Pipeline": df_test["pp_best_glm_pipeline"],
+}
+actual_values = y_test_t
+
+# Plot Predict vs. Actual for each model
+fig, axes = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
+for ax, (model_name, predictions) in zip(axes, models_predictions.items()):
+    ax.scatter(actual_values, predictions, alpha=0.5)
+    ax.plot(
+        [actual_values.min(), actual_values.max()],
+        [actual_values.min(), actual_values.max()],
+        "r--",
+    )
+    ax.set_title(f"{model_name}\nPredict vs. Actual")
+    ax.set_xlabel("Actual Income")
+    ax.set_ylabel("Predicted Income")
+    ax.grid(True)
+
+plt.tight_layout()
+plt.show()
 # %%
 # Lorenz Curve
 # Plot Lorenz Curve for Models
@@ -371,7 +394,7 @@ fig, ax = plt.subplots(figsize=(8, 8))
 for label, y_pred in [
     ("Gaussian LGBM", df_test["pp_t_lgbm"]),  # unconstrained LGBM model
     ("Constraint LGBM ", df_test["pp_t_clgbm"]),  # constrained LGBM model
-    ("GLM Splines", df_test["pp_glm2"]),  # GLM with Splines
+    ("GLM Splines", df_test["pp_best_glm_pipeline"]),  # GLM with Splines
     ("GLM Benchmark", df_test["pp_glm1"]),  # GLM Benchmark
 ]:
     ordered_samples, cum_income = lorenz_curve(
